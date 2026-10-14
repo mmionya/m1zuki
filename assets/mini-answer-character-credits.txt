@@ -1,0 +1,11 @@
+Artwork: Mizuki Akiyama Chibi
+Artist: oyasuminana
+Source supplied by the user:
+https://www.redbubble.com/i/sticker/Mizuki-Akiyama-Chibi-by-oyasuminana/121528053/7sgk
+
+Original image URL:
+https://ih1.redbubble.net/image.4040070142.8053/bg%2Cf8f8f8-flat%2C750x%2C075%2Cf-pad%2C750x1000%2Cf8f8f8.u2.webp
+
+mini-answer-character.webp is the downloaded original image.
+mini-answer-character.png preserves the decoded pixels of the original image.
+mini-answer-character.svg embeds that PNG on a square canvas and preserves its aspect ratio.
