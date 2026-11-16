@@ -1,4 +1,11 @@
 #pragma once
+#include <QtGlobal>
+#ifdef Q_OS_WIN
+#include "captureprotection_windows.h"
+#elif defined(Q_OS_MACOS)
+#include "captureprotection_macos.h"
+#else
+#pragma once
 
 #include <QDBusContext>
 #include <QObject>
@@ -43,3 +50,5 @@ private:
     bool m_failed = false;
     bool m_requested = false;
 };
+
+#endif

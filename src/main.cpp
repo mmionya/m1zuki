@@ -2,6 +2,7 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QLocalServer>
 #include <QLocalSocket>
@@ -11,7 +12,7 @@
 #include <cstdio>
 
 int main(int argc, char **argv) {
-#ifndef HAVE_LAYER_SHELL
+#if !defined(HAVE_LAYER_SHELL) && defined(Q_OS_LINUX)
     // XWayland fallback when native Wayland layer positioning is unavailable.
     if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM") && !qEnvironmentVariableIsEmpty("DISPLAY"))
         qputenv("QT_QPA_PLATFORM", "xcb");
@@ -21,7 +22,7 @@ int main(int argc, char **argv) {
     app.setApplicationDisplayName("m1zuki");
     app.setOrganizationName("MiniAnswer");
     app.setDesktopFileName("m1zuki");
-    app.setApplicationVersion("1.3.1");
+    app.setApplicationVersion("1.4.0");
     app.setQuitOnLastWindowClosed(false);
     QCommandLineParser parser;
     parser.setApplicationDescription("mizukimizukimizukimizuki");
@@ -39,7 +40,15 @@ int main(int argc, char **argv) {
     }
     QString command = "settings";
     for (const auto &option : {"capture", "clear", "quit", "demo"}) if (parser.isSet(option)) command = option;
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    const QString runtime = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    if (!QDir().mkpath(runtime)) return 1;
+#ifdef Q_OS_MACOS
+    if (!QFile::setPermissions(runtime, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner)) return 1;
+#endif
+#else
     const QString runtime = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
+#endif
     if (runtime.isEmpty()) { std::fprintf(stderr, "Нет защищённого каталога XDG_RUNTIME_DIR.\n"); return 1; }
     const QString socketPath = QDir(runtime).filePath("mini-answer.sock");
     QLocalSocket socket;

@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-if [[ ! -x "$project_dir/build/m1zuki" ]]; then
-  cmake -S "$project_dir" -B "$project_dir/build" -DCMAKE_BUILD_TYPE=Release
-  cmake --build "$project_dir/build" --parallel 2
+if [[ "$(uname -s)" != Linux ]]; then
+  printf '%s\n' 'run.sh is for Linux. Use the native build instructions for your platform.' >&2
+  exit 1
 fi
-exec "$project_dir/build/m1zuki" "$@"
+build_dir="${M1ZUKI_BUILD_DIR:-$project_dir/build-linux}"
+# Always run an incremental build: an existing executable may predate new sources.
+cmake -S "$project_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release
+cmake --build "$build_dir" --target mini-answer --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
+exec "$build_dir/m1zuki" "$@"

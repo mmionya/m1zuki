@@ -8,6 +8,7 @@
 #include <QBuffer>
 #include <QCheckBox>
 #include <QCloseEvent>
+#include <QComboBox>
 #include <QFrame>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -19,6 +20,7 @@
 #include <QMenu>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QSignalBlocker>
 #include <QStyle>
 #include <QSystemTrayIcon>
 #include <QTimer>
@@ -34,11 +36,16 @@ Controller::Controller(bool demoMode) : demoMode_(demoMode) {
     desktop_ = new DesktopIntegration(this);
     client_ = new OpenRouterClient(this);
     overlay_ = new Overlay;
+    errorOverlay_ = new Overlay;
+    // This window contains only a generic cross, never answers or error details.
+    errorOverlay_->setObjectName("errorIndicator");
     protection_ = new CaptureProtection(this);
     connect(qApp, &QCoreApplication::aboutToQuit, this, [this] {
         clear();
         delete overlay_;
         overlay_ = nullptr;
+        delete errorOverlay_;
+        errorOverlay_ = nullptr;
     });
     setWindowIcon(appIcon());
     qApp->setWindowIcon(windowIcon());
@@ -62,13 +69,20 @@ Controller::Controller(bool demoMode) : demoMode_(demoMode) {
         }
     });
     if (!demoMode_) {
+#ifdef Q_OS_MACOS
+        protection_->setAllowUnprotectedOverlay(settings_.allowUnprotectedOverlay);
+#endif
         setupTray();
+        QString shortcutError;
+        showShortcutReady_ = desktop_->registerShowShortcut(&shortcutError);
         applyShortcuts();
+        if (!showShortcutReady_) status(shortcutError, true);
         QTimer::singleShot(0, protection_, &CaptureProtection::start);
     }
     if (!loadError.isEmpty()) status(loadError, true);
     connect(desktop_, &DesktopIntegration::captureRequested, this, &Controller::capture);
     connect(desktop_, &DesktopIntegration::clearRequested, this, &Controller::clear);
+    connect(desktop_, &DesktopIntegration::showRequested, this, &Controller::showSettings);
     connect(desktop_, &DesktopIntegration::failed, this, [this](const QString &message) {
         if (!busy_) return;
         busy_ = false;
@@ -87,14 +101,14 @@ Controller::Controller(bool demoMode) : demoMode_(demoMode) {
         status("Ожидаю ответ OpenRouter…");
         client_->solve(png, effectiveApiKey(settings_), settings_.model);
     });
-    connect(client_, &OpenRouterClient::answered, this, [this](const QList<int> &numbers) {
+    connect(client_, &OpenRouterClient::answered, this, [this](const QList<QList<int>> &questionAnswers) {
         if (!busy_) return;
         busy_ = false;
         if (!protection_->isReady()) {
             status("Защита записи экрана недоступна. Ответ не показан.", true);
             return;
         }
-        overlay_->showNumbers(numbers, settings_.displaySeconds, settings_.fontPixels);
+        overlay_->showQuestionAnswers(questionAnswers, settings_.displaySeconds, settings_.fontPixels);
         status("Ответ показан. Готов к следующему вопросу.");
     });
     connect(client_, &OpenRouterClient::failed, this, [this](const QString &message) {
@@ -102,6 +116,12 @@ Controller::Controller(bool demoMode) : demoMode_(demoMode) {
         busy_ = false;
         status(message, true);
     });
+}
+
+Controller::~Controller() {
+    clear();
+    delete overlay_;
+    delete errorOverlay_;
 }
 
 void Controller::buildUi() {
@@ -114,12 +134,16 @@ void Controller::buildUi() {
       QFrame#card { background: #1d1b26; border: 1px solid #302c3c; border-radius: 18px; }
       QLabel { background: transparent; color: #c6bdcf; font-size: 12px; font-weight: 500; }
       QFrame#divider { background: #353040; border: none; }
-      QLineEdit, QKeySequenceEdit, QSpinBox {
+      QLineEdit, QKeySequenceEdit, QSpinBox, QComboBox {
         background: #25222f; border: 1px solid #3a3447; border-radius: 9px;
         padding: 10px 12px; selection-background-color: #795568; selection-color: #ffffff;
       }
-      QLineEdit:hover, QKeySequenceEdit:hover, QSpinBox:hover { border-color: #65556e; }
-      QLineEdit:focus, QKeySequenceEdit:focus, QSpinBox:focus { border-color: #e4aec6; background: #2b2534; }
+      QLineEdit:hover, QKeySequenceEdit:hover, QSpinBox:hover, QComboBox:hover { border-color: #65556e; }
+      QLineEdit:focus, QKeySequenceEdit:focus, QSpinBox:focus, QComboBox:focus { border-color: #e4aec6; background: #2b2534; }
+      QComboBox { padding-right: 30px; }
+      QComboBox::drop-down { subcontrol-origin: border; subcontrol-position: top right; width: 28px; border: none; }
+      QComboBox::down-arrow { image: url(:/chevron-down.svg); width: 12px; height: 8px; }
+      QComboBox QAbstractItemView { background: #25222f; border: 1px solid #62536e; padding: 4px; selection-background-color: #403348; }
       QKeySequenceEdit { background: transparent; border: none; padding: 0; }
       QKeySequenceEdit QLineEdit { background: #25222f; border: 1px solid #3a3447; border-radius: 9px; padding: 10px 12px; }
       QKeySequenceEdit QLineEdit:hover { border-color: #65556e; }
@@ -156,6 +180,9 @@ void Controller::buildUi() {
       QMenu::separator { height: 1px; background: #403649; margin: 5px 10px; }
       QToolTip { color: #f4eff6; background: #302838; border: 1px solid #62536e; padding: 5px; }
     )");
+#ifdef Q_OS_WIN
+    setStyleSheet(styleSheet().replace("\"Adwaita Sans\", \"Noto Sans\", sans-serif", "\"Segoe UI\""));
+#endif
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(22, 22, 22, 18);
     layout->setSpacing(18);
@@ -185,6 +212,20 @@ void Controller::buildUi() {
     captureEdit_->setMaximumSequenceLength(1);
     clearEdit_ = new QKeySequenceEdit(QKeySequence(settings_.clearShortcut), card);
     clearEdit_->setMaximumSequenceLength(1);
+    auto mouseBindingEdit = [card](int selected, const QString &action) {
+        auto *edit = new QComboBox(card);
+        edit->addItem("Без кнопки мыши", 0);
+        edit->addItem("Средняя кнопка мыши — нажатие на колёсико", 2);
+        edit->addItem("Мышь 4 — назад", 4);
+        edit->addItem("Мышь 5 — вперёд", 5);
+        edit->setCurrentIndex(edit->findData(selected));
+        edit->setAccessibleName("Кнопка мыши: " + action);
+        edit->setToolTip("Выбранная кнопка запускает действие «" + action
+                        + "» глобально, пока приложение работает. Обычная функция кнопки вернётся после удаления привязки или выхода из приложения.");
+        return edit;
+    };
+    captureMouseEdit_ = mouseBindingEdit(settings_.captureMouseButton, "Получить ответ");
+    clearMouseEdit_ = mouseBindingEdit(settings_.clearMouseButton, "Скрыть / отменить");
     secondsEdit_ = new QSpinBox(card); secondsEdit_->setRange(1, 300); secondsEdit_->setSuffix(" сек"); secondsEdit_->setValue(settings_.displaySeconds);
     fontEdit_ = new QSpinBox(card); fontEdit_->setRange(12, 96); fontEdit_->setSuffix(" px"); fontEdit_->setValue(settings_.fontPixels);
     secondsEdit_->setAlignment(Qt::AlignCenter);
@@ -202,11 +243,22 @@ void Controller::buildUi() {
     form->setRowMinimumHeight(5, 25);
     addField("Получить ответ", captureEdit_, 6, 0);
     addField("Скрыть / отменить", clearEdit_, 6, 1);
-    form->setRowMinimumHeight(8, 8);
-    addField("Время показа", secondsEdit_, 9, 0);
-    addField("Размер шрифта", fontEdit_, 9, 1);
-    form->setRowMinimumHeight(11, 8);
-    form->addWidget(monitorEdit_, 12, 0, 1, 2);
+    addField("Кнопка мыши · получить ответ", captureMouseEdit_, 8, 0);
+    addField("Кнопка мыши · скрыть / отменить", clearMouseEdit_, 8, 1);
+    form->setRowMinimumHeight(9, 8);
+    addField("Время показа", secondsEdit_, 10, 0);
+    addField("Размер шрифта", fontEdit_, 10, 1);
+    form->setRowMinimumHeight(12, 8);
+    form->addWidget(monitorEdit_, 13, 0, 1, 2);
+#ifdef Q_OS_MACOS
+    unprotectedEdit_ = new QCheckBox("Разрешить показ без защиты от записи", card);
+    unprotectedEdit_->setChecked(settings_.allowUnprotectedOverlay);
+    auto *captureNotice = new QLabel("macOS не гарантирует скрытие окон из записи экрана. "
+                                    "Если включить этот режим, ответы могут быть видны при демонстрации и записи.", card);
+    captureNotice->setWordWrap(true);
+    form->addWidget(unprotectedEdit_, 14, 0, 1, 2);
+    form->addWidget(captureNotice, 15, 0, 1, 2);
+#endif
     layout->addWidget(card);
     statusLabel_ = new QLabel(this);
     statusLabel_->setObjectName("error");
@@ -228,17 +280,56 @@ void Controller::buildUi() {
     buttons->addWidget(saveButton);
     layout->addLayout(buttons);
     auto *footer = new QHBoxLayout;
+    trayButton_ = new QPushButton("Скрыть значок и окно", this);
+    trayButton_->setObjectName("trayVisibilityButton");
+    trayButton_->setToolTip("Убрать значок из трея и скрыть окно. Вернуть окно: Ctrl+Alt+M.");
+    footer->addWidget(trayButton_);
+    auto *restoreHint = new QLabel("Вернуть окно: Ctrl+Alt+M", this);
+#ifdef Q_OS_MACOS
+    restoreHint->setText("Вернуть окно: ⌘⌥M");
+    trayButton_->setToolTip("Убрать значок и окно. Вернуть окно: ⌘⌥M (Command+Option+M).");
+#endif
+    footer->addWidget(restoreHint);
     auto *quit = new QPushButton("Выйти", this);
     quit->setObjectName("quiet");
     footer->addStretch(); footer->addWidget(quit);
     layout->addLayout(footer);
     connect(test, &QPushButton::clicked, this, &Controller::preview);
+    connect(captureMouseEdit_, &QComboBox::currentIndexChanged, this, [this] {
+        saveMouseBindings();
+    });
+    connect(clearMouseEdit_, &QComboBox::currentIndexChanged, this, [this] {
+        saveMouseBindings();
+    });
     connect(saveButton, &QPushButton::clicked, this, [this] {
-        if (save() && tray_ && tray_->isVisible()) hide();
+        if (save() && ((tray_ && tray_->isVisible()) || showShortcutReady_)) hide();
     });
     connect(captureButton, &QPushButton::clicked, this, [this] { if (save()) capture(); });
     connect(quit, &QPushButton::clicked, qApp, &QApplication::quit);
+    connect(trayButton_, &QPushButton::clicked, this, &Controller::toggleTray);
     adjustSize();
+}
+
+void Controller::toggleTray() {
+    if (demoMode_) return;
+    if (!tray_) { status("Системный трей недоступен.", true); return; }
+    if (tray_->isVisible()) {
+        QString error;
+        showShortcutReady_ = desktop_->registerShowShortcut(&error);
+        if (!showShortcutReady_) { status(error, true); return; }
+        tray_->hide();
+        trayButton_->setText("Показать значок трея");
+        trayButton_->setToolTip("Вернуть значок m1zuki в системный трей.");
+        hide();
+    } else {
+        tray_->show();
+        trayButton_->setText("Скрыть значок и окно");
+#ifdef Q_OS_MACOS
+        trayButton_->setToolTip("Убрать значок и окно. Вернуть окно: ⌘⌥M (Command+Option+M).");
+#else
+        trayButton_->setToolTip("Убрать значок из трея и скрыть окно. Вернуть окно: Ctrl+Alt+M.");
+#endif
+    }
 }
 
 void Controller::setupTray() {
@@ -262,31 +353,86 @@ void Controller::setupTray() {
 
 bool Controller::save() {
     if (demoMode_) return false;
-    AppSettings next;
+    AppSettings next = settings_;
+#ifdef Q_OS_MACOS
+    next.allowUnprotectedOverlay = unprotectedEdit_->isChecked();
+#endif
     next.apiKey = keyEdit_->text().trimmed();
     next.model = modelEdit_->text().trimmed();
     next.captureShortcut = captureEdit_->keySequence().toString(QKeySequence::PortableText);
     next.clearShortcut = clearEdit_->keySequence().toString(QKeySequence::PortableText);
+    next.captureMouseButton = captureMouseEdit_->currentData().toInt();
+    next.clearMouseButton = clearMouseEdit_->currentData().toInt();
     next.displaySeconds = secondsEdit_->value();
     next.fontPixels = fontEdit_->value();
     next.currentMonitor = monitorEdit_->isChecked();
     QString error;
-    if (!desktop_->registerShortcuts(QKeySequence(next.captureShortcut), QKeySequence(next.clearShortcut), &error)) {
+    if (!validateSettings(next, &error)) {
+        status(error, true); return false;
+    }
+    if (!desktop_->registerShortcuts(QKeySequence(next.captureShortcut), QKeySequence(next.clearShortcut),
+                                     next.captureMouseButton, next.clearMouseButton, &error)) {
         status(error, true); return false;
     }
     if (!saveSettings(next, &error)) {
-        desktop_->registerShortcuts(QKeySequence(settings_.captureShortcut), QKeySequence(settings_.clearShortcut));
+        QString rollbackError;
+        if (!desktop_->rollbackShortcuts(&rollbackError))
+            error += "\n" + rollbackError;
         status(error, true); return false;
     }
     clear();
     settings_ = next;
+#ifdef Q_OS_MACOS
+    protection_->setAllowUnprotectedOverlay(settings_.allowUnprotectedOverlay);
+#endif
     status(configured() ? "Готово. Нажмите " + settings_.captureShortcut + "." : "Настройки сохранены. Для распознавания нужен API-ключ.");
     return true;
 }
 
+void Controller::saveMouseBindings() {
+    if (demoMode_)
+        return;
+
+    AppSettings next = settings_;
+    next.captureMouseButton = captureMouseEdit_->currentData().toInt();
+    next.clearMouseButton = clearMouseEdit_->currentData().toInt();
+    auto restoreSelections = [this] {
+        const QSignalBlocker captureBlocker(captureMouseEdit_);
+        const QSignalBlocker clearBlocker(clearMouseEdit_);
+        captureMouseEdit_->setCurrentIndex(captureMouseEdit_->findData(settings_.captureMouseButton));
+        clearMouseEdit_->setCurrentIndex(clearMouseEdit_->findData(settings_.clearMouseButton));
+    };
+
+    QString error;
+    if (!validateSettings(next, &error)) {
+        restoreSelections();
+        status(error, true);
+        return;
+    }
+    if (!desktop_->registerShortcuts(QKeySequence(settings_.captureShortcut),
+                                     QKeySequence(settings_.clearShortcut),
+                                     next.captureMouseButton, next.clearMouseButton, &error)) {
+        restoreSelections();
+        status(error, true);
+        return;
+    }
+    if (!saveSettings(next, &error)) {
+        QString rollbackError;
+        if (!desktop_->rollbackShortcuts(&rollbackError))
+            error += "\n" + rollbackError;
+        restoreSelections();
+        status(error, true);
+        return;
+    }
+
+    settings_ = next;
+    status("Назначения кнопок мыши сохранены.");
+}
+
 void Controller::applyShortcuts() {
     QString error;
-    if (!desktop_->registerShortcuts(QKeySequence(settings_.captureShortcut), QKeySequence(settings_.clearShortcut), &error)) status(error, true);
+    if (!desktop_->registerShortcuts(QKeySequence(settings_.captureShortcut), QKeySequence(settings_.clearShortcut),
+                                     settings_.captureMouseButton, settings_.clearMouseButton, &error)) status(error, true);
     else if (configured()) status("Готово. Нажмите " + settings_.captureShortcut + ".");
 }
 
@@ -295,12 +441,11 @@ bool Controller::configured() const { return !effectiveApiKey(settings_).isEmpty
 void Controller::capture() {
     if (demoMode_ || busy_) return;
     if (!protection_->isReady()) {
-        showSettings();
-        if (protectionStatus_.isEmpty()) protectionStatus_ = "Защита записи экрана ещё не готова. Дождитесь подтверждения KDE.";
+        if (protectionStatus_.isEmpty()) protectionStatus_ = "Защита записи экрана ещё не готова. Дождитесь подтверждения системы.";
         status(protectionStatus_, true);
         return;
     }
-    if (!configured()) { showSettings(); status("Введите API-ключ OpenRouter и сохраните настройки.", true); return; }
+    if (!configured()) { status("Введите API-ключ OpenRouter в настройках и сохраните его.", true); return; }
     clear();
     busy_ = true;
     // Let the compositor remove our windows before Spectacle captures the screen.
@@ -319,6 +464,7 @@ void Controller::clear() {
     client_->cancel();
     desktop_->cancelCapture();
     if (overlay_) overlay_->clear();
+    if (errorOverlay_) errorOverlay_->clear();
     status("Готов к следующему вопросу.");
 }
 
@@ -338,15 +484,19 @@ void Controller::preview() {
 }
 
 void Controller::status(const QString &message, bool error) {
+    if (error && overlay_) overlay_->clear();
     statusLabel_->setText(message);
     statusLabel_->setVisible(error);
+    if (errorOverlay_ && !demoMode_) {
+        if (error) errorOverlay_->showError();
+        else errorOverlay_->clear();
+    }
     if (tray_) {
         tray_->setToolTip("m1zuki — " + message);
-        if (error && !isVisible()) tray_->showMessage("m1zuki", message, QSystemTrayIcon::Warning, 5000);
     }
 }
 
-void Controller::showSettings() { show(); raise(); activateWindow(); }
+void Controller::showSettings() { showNormal(); raise(); activateWindow(); }
 
 void Controller::handleCommand(const QString &command) {
     if (command == "capture") capture();
@@ -357,7 +507,7 @@ void Controller::handleCommand(const QString &command) {
 }
 
 void Controller::closeEvent(QCloseEvent *event) {
-    if (tray_ && tray_->isVisible()) { hide(); event->ignore(); }
+    if ((tray_ && tray_->isVisible()) || showShortcutReady_) { hide(); event->ignore(); }
     else { event->accept(); qApp->quit(); }
 }
 

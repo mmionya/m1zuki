@@ -1,4 +1,5 @@
 #include "desktop.h"
+#include "mousebindings.h"
 
 #include <KGlobalAccel>
 #include <KGlobalShortcutInfo>
@@ -29,6 +30,7 @@ DesktopIntegration::DesktopIntegration(QObject *parent)
     : QObject(parent)
     , m_captureAction(new QAction(tr("Получить ответы"), this))
     , m_clearAction(new QAction(tr("Скрыть ответы"), this))
+    , m_mouseBindings(std::make_unique<MouseBindings>())
 {
     m_captureAction->setObjectName(QStringLiteral("capture"));
     m_clearAction->setObjectName(QStringLiteral("clear"));
@@ -49,6 +51,8 @@ DesktopIntegration::DesktopIntegration(QObject *parent)
 DesktopIntegration::~DesktopIntegration()
 {
     cleanCapture();
+    m_mouseBindings.reset();
+    if (m_showAction) KGlobalAccel::self()->removeAllShortcuts(m_showAction);
     if (!m_shortcutsTouched)
         return;
     auto *accelerator = KGlobalAccel::self();
@@ -58,8 +62,40 @@ DesktopIntegration::~DesktopIntegration()
         accelerator->removeAllShortcuts(m_clearAction);
 }
 
+bool DesktopIntegration::registerShowShortcut(QString *error)
+{
+    if (error) error->clear();
+    auto *bus = QDBusConnection::sessionBus().interface();
+    if (!bus || !bus->isServiceRegistered(QStringLiteral("org.kde.kglobalaccel"))) {
+        if (error) *error = tr("Служба горячих клавиш KDE недоступна. Значок трея останется видимым.");
+        return false;
+    }
+    const QKeySequence shortcut(QStringLiteral("Ctrl+Alt+M"));
+    if (!shortcutAvailable(shortcut)) {
+        if (error) *error = tr("Ctrl+Alt+M занято другой программой.");
+        return false;
+    }
+    if (!m_showAction) {
+        m_showAction = new QAction(tr("Показать окно m1zuki"), this);
+        m_showAction->setObjectName(QStringLiteral("showSettings"));
+        m_showAction->setProperty("componentName", componentName);
+        m_showAction->setProperty("componentDisplayName", "m1zuki");
+        connect(m_showAction, &QAction::triggered, this, &DesktopIntegration::showRequested);
+    }
+    auto *accelerator = KGlobalAccel::self();
+    if (!accelerator->setShortcut(m_showAction, {shortcut}, KGlobalAccel::NoAutoloading)
+        || accelerator->shortcut(m_showAction) != QList<QKeySequence>{shortcut}) {
+        accelerator->removeAllShortcuts(m_showAction);
+        if (error) *error = tr("Не удалось назначить Ctrl+Alt+M для возвращения окна.");
+        return false;
+    }
+    return true;
+}
+
 bool DesktopIntegration::registerShortcuts(const QKeySequence &capture,
-                                           const QKeySequence &clear, QString *error)
+                                           const QKeySequence &clear,
+                                           int captureMouseButton, int clearMouseButton,
+                                           QString *error)
 {
     auto fail = [error](const QString &message) {
         if (error)
@@ -68,16 +104,31 @@ bool DesktopIntegration::registerShortcuts(const QKeySequence &capture,
     };
     if (error)
         error->clear();
+    // Undo stale mappings even when this launch cannot register shortcuts.
+    if (!m_mouseBindings->recover(error))
+        return false;
+    if (capture == QKeySequence(QStringLiteral("Ctrl+Alt+M")) || clear == QKeySequence(QStringLiteral("Ctrl+Alt+M")))
+        return fail(tr("Ctrl+Alt+M используется для возвращения окна m1zuki."));
     if (capture.isEmpty() || clear.isEmpty())
         return fail(tr("Укажите обе горячие клавиши."));
     if (capture.count() != 1 || clear.count() != 1)
         return fail(tr("Используйте одно сочетание клавиш для каждого действия."));
     if (capture == clear)
         return fail(tr("Горячие клавиши снимка и скрытия должны отличаться."));
+    const auto validButton = [](int button) { return button == 0 || button == 2 || button == 4 || button == 5; };
+    if (!validButton(captureMouseButton) || !validButton(clearMouseButton)
+        || (captureMouseButton && captureMouseButton == clearMouseButton))
+        return fail(tr("Выберите разные кнопки мыши для двух действий."));
+    if ((captureMouseButton || clearMouseButton)
+        && !QGuiApplication::platformName().startsWith(QLatin1String("wayland")))
+        return fail(tr("Глобальные кнопки мыши поддерживаются в сеансе KDE Wayland."));
 
     auto *bus = QDBusConnection::sessionBus().interface();
     if (!bus || !bus->isServiceRegistered(QStringLiteral("org.kde.kglobalaccel")))
         return fail(tr("Служба горячих клавиш KDE недоступна. Запустите приложение в сеансе KDE Plasma."));
+    if ((captureMouseButton || clearMouseButton)
+        && !bus->isServiceRegistered(QStringLiteral("org.kde.KWin")))
+        return fail(tr("KWin недоступен: не удалось назначить кнопки мыши."));
 
     for (const auto &sequence : {capture, clear}) {
         if (!shortcutAvailable(sequence)) {
@@ -103,6 +154,44 @@ bool DesktopIntegration::registerShortcuts(const QKeySequence &capture,
         accelerator->setShortcut(m_clearAction, previousClear, KGlobalAccel::NoAutoloading);
         return fail(tr("KDE не удалось назначить горячие клавиши."));
     }
+    if (!m_mouseBindings->configure(capture, clear, captureMouseButton, clearMouseButton, error)) {
+        accelerator->setShortcut(m_captureAction, {}, KGlobalAccel::NoAutoloading);
+        accelerator->setShortcut(m_clearAction, {}, KGlobalAccel::NoAutoloading);
+        accelerator->setShortcut(m_captureAction, previousCapture, KGlobalAccel::NoAutoloading);
+        accelerator->setShortcut(m_clearAction, previousClear, KGlobalAccel::NoAutoloading);
+        return false;
+    }
+    m_previousShortcuts = ShortcutState{previousCapture, previousClear,
+                                       m_captureMouseButton, m_clearMouseButton};
+    m_captureMouseButton = captureMouseButton;
+    m_clearMouseButton = clearMouseButton;
+    return true;
+}
+
+bool DesktopIntegration::rollbackShortcuts(QString *error)
+{
+    if (error)
+        error->clear();
+    if (!m_previousShortcuts)
+        return true;
+    const auto &previous = *m_previousShortcuts;
+    auto *accelerator = KGlobalAccel::self();
+    accelerator->setShortcut(m_captureAction, {}, KGlobalAccel::NoAutoloading);
+    accelerator->setShortcut(m_clearAction, {}, KGlobalAccel::NoAutoloading);
+    const bool captureSet = accelerator->setShortcut(m_captureAction, previous.capture, KGlobalAccel::NoAutoloading);
+    const bool clearSet = accelerator->setShortcut(m_clearAction, previous.clear, KGlobalAccel::NoAutoloading);
+    const bool mouseSet = m_mouseBindings->configure(previous.capture.value(0), previous.clear.value(0),
+        previous.captureMouseButton, previous.clearMouseButton, error);
+    if (!captureSet || !clearSet || !mouseSet
+        || accelerator->shortcut(m_captureAction) != previous.capture
+        || accelerator->shortcut(m_clearAction) != previous.clear) {
+        if (error && error->isEmpty())
+            *error = tr("Не удалось восстановить прежние горячие клавиши KDE.");
+        return false;
+    }
+    m_captureMouseButton = previous.captureMouseButton;
+    m_clearMouseButton = previous.clearMouseButton;
+    m_previousShortcuts.reset();
     return true;
 }
 

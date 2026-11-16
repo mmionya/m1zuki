@@ -1,4 +1,6 @@
 #include "desktop.h"
+#include <KConfig>
+#include <KConfigGroup>
 
 #include <QDir>
 #include <QFile>
@@ -19,6 +21,9 @@ private:
     QString m_imagePath;
     QString m_argsPath;
     QString m_outputMarker;
+    QTemporaryDir m_configDirectory;
+    QByteArray m_previousConfigHome;
+    QByteArray m_previousBus;
 
     bool installSpectacle(const QByteArray &operation)
     {
@@ -51,6 +56,57 @@ private:
     QString capturePath() { return QString::fromUtf8(readFile(m_outputMarker)); }
 
 private slots:
+    void initTestCase()
+    {
+        QVERIFY(m_configDirectory.isValid());
+        m_previousConfigHome = qgetenv("XDG_CONFIG_HOME");
+        m_previousBus = qgetenv("DBUS_SESSION_BUS_ADDRESS");
+        qputenv("XDG_CONFIG_HOME", m_configDirectory.path().toUtf8());
+        // Never register real shortcuts or change the user's KDE settings.
+        qputenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/tmp/m1zuki-test-no-session-bus");
+    }
+
+    void cleanupTestCase()
+    {
+        if (m_previousConfigHome.isNull()) qunsetenv("XDG_CONFIG_HOME");
+        else qputenv("XDG_CONFIG_HOME", m_previousConfigHome);
+        if (m_previousBus.isNull()) qunsetenv("DBUS_SESSION_BUS_ADDRESS");
+        else qputenv("DBUS_SESSION_BUS_ADDRESS", m_previousBus);
+    }
+
+    void restoreShortcutRequiresRunningKdeService()
+    {
+        DesktopIntegration desktop;
+        QString error;
+        QVERIFY(!desktop.registerShowShortcut(&error));
+        QVERIFY(!error.isEmpty());
+    }
+
+    void reservedShortcutStillRecoversMouseMappings()
+    {
+        const QStringList original{QStringLiteral("Key"), QStringLiteral("Alt+Left")};
+        const QString sequence = QStringLiteral("Ctrl+Alt+F9");
+        {
+            KConfig config(QStringLiteral("kcminputrc"), KConfig::NoGlobals);
+            config.group(QStringLiteral("ButtonRebinds")).group(QStringLiteral("Mouse"))
+                .writeEntry(QStringLiteral("ExtraButton1"), QStringList{QStringLiteral("Key"), sequence});
+            QVERIFY(config.sync());
+            KConfig journal(QStringLiteral("mini-answer/mouse-bindingsrc"), KConfig::SimpleConfig);
+            auto group = journal.group(QStringLiteral("ExtraButton1"));
+            group.writeEntry(QStringLiteral("Sequences"), QStringList{sequence});
+            group.group(QStringLiteral("Original")).writeEntry(QStringLiteral("ExtraButton1"), original);
+            QVERIFY(journal.sync());
+        }
+        DesktopIntegration desktop;
+        QString error;
+        QVERIFY(!desktop.registerShortcuts(QKeySequence(QStringLiteral("Ctrl+Alt+M")),
+                    QKeySequence(QStringLiteral("Ctrl+Alt+Backspace")), 0, 0, &error));
+        QVERIFY(!error.isEmpty());
+        KConfig config(QStringLiteral("kcminputrc"), KConfig::NoGlobals);
+        QCOMPARE(config.group(QStringLiteral("ButtonRebinds")).group(QStringLiteral("Mouse"))
+                     .readEntry(QStringLiteral("ExtraButton1"), QStringList{}), original);
+    }
+
     void init()
     {
         m_directory = std::make_unique<QTemporaryDir>();

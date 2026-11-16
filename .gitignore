@@ -9,3 +9,9 @@ __pycache__/
 .env.*
 !.env.example
 settings.json
+
+/.tools/
+/.upstream-backup/
+/build-windows/
+/build-linux/
+/build-macos/

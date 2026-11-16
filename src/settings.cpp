@@ -12,6 +12,9 @@
 #include <QStandardPaths>
 
 #include <cmath>
+#ifdef Q_OS_WIN
+#include "windowspermissions.h"
+#endif
 
 namespace {
 constexpr qint64 maximumSettingsBytes = 64 * 1024;
@@ -37,6 +40,11 @@ bool validShortcut(const QString &text)
         && key != Qt::Key_AltGr;
 }
 
+bool validMouseButton(int button)
+{
+    return button == 0 || button == 2 || button == 4 || button == 5;
+}
+
 bool validate(const AppSettings &settings, QString *error)
 {
     static const QRegularExpression modelPattern(
@@ -58,6 +66,14 @@ bool validate(const AppSettings &settings, QString *error)
     if (QKeySequence::fromString(settings.captureShortcut, QKeySequence::PortableText)
         == QKeySequence::fromString(settings.clearShortcut, QKeySequence::PortableText)) {
         setError(error, QStringLiteral("Для распознавания и скрытия ответа нужны разные горячие клавиши."));
+        return false;
+    }
+    if (!validMouseButton(settings.captureMouseButton) || !validMouseButton(settings.clearMouseButton)) {
+        setError(error, QStringLiteral("Для кнопки мыши допустимы только значения 0 (без привязки), 2 (колёсико), 4 или 5."));
+        return false;
+    }
+    if (settings.captureMouseButton != 0 && settings.captureMouseButton == settings.clearMouseButton) {
+        setError(error, QStringLiteral("Для распознавания и скрытия ответа нужны разные кнопки мыши."));
         return false;
     }
     if (settings.displaySeconds < 1 || settings.displaySeconds > 300) {
@@ -102,9 +118,17 @@ bool readInteger(const QJsonObject &object, const QString &name, int minimum, in
 }
 } // namespace
 
+bool validateSettings(const AppSettings &settings, QString *error)
+{
+    setError(error, {});
+    return validate(settings, error);
+}
+
 QString settingsFilePath()
 {
-    return QDir(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation))
+    // Explicit XDG_CONFIG_HOME also supports portable configurations and isolated tests.
+    const auto overridePath = qEnvironmentVariable("XDG_CONFIG_HOME");
+    return QDir(overridePath.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) : overridePath)
         .filePath(QStringLiteral("mini-answer/settings.json"));
 }
 
@@ -148,6 +172,8 @@ AppSettings loadSettings(QString *error)
         || !readString(object, QStringLiteral("model"), settings.model, error)
         || !readString(object, QStringLiteral("captureShortcut"), settings.captureShortcut, error)
         || !readString(object, QStringLiteral("clearShortcut"), settings.clearShortcut, error)
+        || !readInteger(object, QStringLiteral("captureMouseButton"), 0, 5, settings.captureMouseButton, error)
+        || !readInteger(object, QStringLiteral("clearMouseButton"), 0, 5, settings.clearMouseButton, error)
         || !readInteger(object, QStringLiteral("displaySeconds"), 1, 300, settings.displaySeconds, error)
         || !readInteger(object, QStringLiteral("fontPixels"), 12, 96, settings.fontPixels, error))
         return {};
@@ -162,6 +188,14 @@ AppSettings loadSettings(QString *error)
     }
     if (!validate(settings, error))
         return {};
+    const auto unprotected = object.value(QStringLiteral("allowUnprotectedOverlay"));
+    if (!unprotected.isUndefined()) {
+        if (!unprotected.isBool()) {
+            setError(error, QStringLiteral("Поле allowUnprotectedOverlay должно быть логическим значением."));
+            return {};
+        }
+        settings.allowUnprotectedOverlay = unprotected.toBool();
+    }
     return settings;
 }
 
@@ -177,8 +211,13 @@ bool saveSettings(const AppSettings &settings, QString *error)
         setError(error, QStringLiteral("Каталог и файл настроек не должны быть символическими ссылками."));
         return false;
     }
+#ifdef Q_OS_WIN
+    if (!QDir().mkpath(directory) || !makeWindowsPrivate(directory, true)
+        || (QFileInfo::exists(path) && !makeWindowsPrivate(path, false))) {
+#else
     if (!QDir().mkpath(directory) || !QFile::setPermissions(directory, directoryPermissions)) {
-        setError(error, QStringLiteral("Не удалось создать личный каталог настроек с правами 0700."));
+#endif
+        setError(error, QStringLiteral("Не удалось ограничить доступ к каталогу настроек текущим пользователем."));
         return false;
     }
 
@@ -187,9 +226,12 @@ bool saveSettings(const AppSettings &settings, QString *error)
         {QStringLiteral("model"), settings.model},
         {QStringLiteral("captureShortcut"), settings.captureShortcut},
         {QStringLiteral("clearShortcut"), settings.clearShortcut},
+        {QStringLiteral("captureMouseButton"), settings.captureMouseButton},
+        {QStringLiteral("clearMouseButton"), settings.clearMouseButton},
         {QStringLiteral("displaySeconds"), settings.displaySeconds},
         {QStringLiteral("fontPixels"), settings.fontPixels},
         {QStringLiteral("currentMonitor"), settings.currentMonitor},
+        {QStringLiteral("allowUnprotectedOverlay"), settings.allowUnprotectedOverlay},
     };
     const auto contents = QJsonDocument(object).toJson(QJsonDocument::Indented);
     QSaveFile file(path);
@@ -198,11 +240,13 @@ bool saveSettings(const AppSettings &settings, QString *error)
         setError(error, QStringLiteral("Не удалось открыть файл настроек для записи: %1").arg(file.errorString()));
         return false;
     }
+#ifndef Q_OS_WIN
     if (!file.setPermissions(filePermissions)) {
         file.cancelWriting();
         setError(error, QStringLiteral("Не удалось установить права 0600 для файла настроек."));
         return false;
     }
+#endif
     if (file.write(contents) != contents.size()) {
         file.cancelWriting();
         setError(error, QStringLiteral("Не удалось записать настройки: %1").arg(file.errorString()));

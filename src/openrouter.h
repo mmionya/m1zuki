@@ -12,11 +12,12 @@ class QNetworkReply;
 
 struct AnswerResult {
     QList<int> numbers;
+    QList<QList<int>> questionAnswers;
     QString error;
 };
 
-// Accepts only complete integer lists (plain/JSON, optionally fenced).
-// Successful answers are sorted, unique and within 1..99; failures are empty.
+// Each question's choices are kept separate and in screenshot reading order.
+// numbers contains the merged choices for callers that only need the old format.
 AnswerResult parseAnswer(const QString &text);
 
 class OpenRouterClient final : public QObject {
@@ -33,7 +34,7 @@ public:
     bool isBusy() const;
 
 signals:
-    void answered(const QList<int> &numbers);
+    void answered(const QList<QList<int>> &questionAnswers);
     void failed(const QString &message);
 
 private:

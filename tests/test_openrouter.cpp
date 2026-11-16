@@ -1,5 +1,7 @@
 #include "openrouter.h"
 
+#include <QBuffer>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -12,12 +14,16 @@
 #include <cstring>
 
 namespace {
-QByteArray completion(const QJsonValue &content, const QString &reason = QStringLiteral("stop"))
+QByteArray completion(const QJsonValue &content, const QString &reason = QStringLiteral("stop"),
+                      const QJsonValue &refusal = QJsonValue(QJsonValue::Undefined))
 {
+    QJsonObject message{{QStringLiteral("content"), content}};
+    if (!refusal.isUndefined())
+        message.insert(QStringLiteral("refusal"), refusal);
     return QJsonDocument(QJsonObject{
         {QStringLiteral("choices"), QJsonArray{QJsonObject{
             {QStringLiteral("finish_reason"), reason},
-            {QStringLiteral("message"), QJsonObject{{QStringLiteral("content"), content}}}
+            {QStringLiteral("message"), message}
         }}}
     }).toJson(QJsonDocument::Compact);
 }
@@ -118,6 +124,10 @@ private slots:
         QTest::newRow("fenced-json-legacy") << QStringLiteral("```json\n{\"answer\": 6}\n```") << QList<int>{6};
         QTest::newRow("multiple") << QStringLiteral("1, 3, 4") << QList<int>{1, 3, 4};
         QTest::newRow("multiple-no-spaces") << QStringLiteral("2,3") << QList<int>{2, 3};
+        QTest::newRow("multi-question-semicolon") << QStringLiteral("1, 3; 2, 4") << QList<int>{1, 2, 3, 4};
+        QTest::newRow("multi-question-json-array") << QStringLiteral("{\"answers\":[[1,3],[2,4]]}") << QList<int>{1, 2, 3, 4};
+        QTest::newRow("multi-question-json-matrix") << QStringLiteral("[[1], [3, 4]]") << QList<int>{1, 3, 4};
+        QTest::newRow("multi-question-json-whitespace") << QStringLiteral("{ \"answers\" : [ [ 2 ], [ 1, 3 ] ] }") << QList<int>{1, 2, 3};
         QTest::newRow("sort-deduplicate") << QStringLiteral("4,1,3,1,4") << QList<int>{1, 3, 4};
         QTest::newRow("array") << QStringLiteral("[1, 3, 4]") << QList<int>{1, 3, 4};
         QTest::newRow("array-single") << QStringLiteral("[2]") << QList<int>{2};
@@ -151,7 +161,7 @@ private slots:
         QTest::newRow("range-list") << QStringLiteral("1, 3-4") << failure;
         QTest::newRow("alternative") << QStringLiteral("1 or 3") << failure;
         QTest::newRow("alternative-russian") << QStringLiteral("1 или 3") << failure;
-        QTest::newRow("semicolon") << QStringLiteral("1;3") << failure;
+        QTest::newRow("semicolon-single-question-groups") << QStringLiteral("1;3") << QList<int>{1, 3};
         QTest::newRow("trailing-comma") << QStringLiteral("1,3,") << failure;
         QTest::newRow("double-comma") << QStringLiteral("1,,3") << failure;
         QTest::newRow("extra-key") << QStringLiteral("{\"answer\":2,\"reason\":\"x\"}") << failure;
@@ -166,6 +176,7 @@ private slots:
         QTest::newRow("bool-array") << QStringLiteral("[1,true]") << failure;
         QTest::newRow("null-array") << QStringLiteral("[1,null]") << failure;
         QTest::newRow("nested-array") << QStringLiteral("[1,[3]]") << failure;
+        QTest::newRow("empty-question-group") << QStringLiteral("{\"answers\":[[1],[]]}") << QList<int>{1};
         QTest::newRow("negative-array") << QStringLiteral("[1,-3]") << failure;
         QTest::newRow("large-array") << QStringLiteral("[1,100]") << failure;
         QTest::newRow("trailing-array-comma") << QStringLiteral("[1,3,]") << failure;
@@ -184,6 +195,12 @@ private slots:
         const auto result = parseAnswer(input);
         QCOMPARE(result.numbers, expected);
         QCOMPARE(result.error.isEmpty(), !expected.isEmpty());
+        if (input == QStringLiteral("{\"answers\":[[1,3],[2,4]]}"))
+            QCOMPARE(result.questionAnswers, (QList<QList<int>>{{1, 3}, {2, 4}}));
+        if (input == QStringLiteral("{ \"answers\" : [ [ 2 ], [ 1, 3 ] ] }"))
+            QCOMPARE(result.questionAnswers, (QList<QList<int>>{{2}, {1, 3}}));
+        if (input == QStringLiteral("{\"answers\":[[1],[]]}"))
+            QCOMPARE(result.questionAnswers, (QList<QList<int>>{{1}, {}}));
     }
 
     void requestAndAnswer()
@@ -196,7 +213,7 @@ private slots:
         client.solve(image, QStringLiteral("sk-test-never-echo"), QStringLiteral("test/vision"));
         QVERIFY(client.isBusy());
         QTRY_COMPARE(answered.count(), 1);
-        QCOMPARE(qvariant_cast<QList<int>>(answered.first().first()), QList<int>{3});
+        QCOMPARE(qvariant_cast<QList<QList<int>>>(answered.first().first()), (QList<QList<int>>{{3}}));
         QCOMPARE(failed.count(), 0);
         QVERIFY(!client.isBusy());
         QCOMPARE(network.requests, 1);
@@ -212,11 +229,50 @@ private slots:
         QVERIFY(!payload.contains(QStringLiteral("response_format")));
         const auto messages = payload.value(QStringLiteral("messages")).toArray();
         QCOMPARE(messages.size(), 2);
+        QVERIFY(messages.at(0).toObject().value(QStringLiteral("content")).toString()
+                    .contains(QStringLiteral("reading order")));
         const auto parts = messages.at(1).toObject().value(QStringLiteral("content")).toArray();
         QCOMPARE(parts.at(0).toObject().value(QStringLiteral("type")).toString(), QStringLiteral("text"));
         const auto imageUrl = parts.at(1).toObject().value(QStringLiteral("image_url")).toObject();
         QCOMPARE(imageUrl.value(QStringLiteral("url")).toString(),
                  QStringLiteral("data:image/png;base64,") + QString::fromLatin1(image.toBase64()));
+    }
+
+    void largeScreenshotIsSentAsOverlappingCrops()
+    {
+        QImage screenshot(1920, 1080, QImage::Format_RGB32);
+        screenshot.fill(Qt::white);
+        QByteArray image;
+        QBuffer buffer(&image);
+        QVERIFY(buffer.open(QIODevice::WriteOnly));
+        QVERIFY(screenshot.save(&buffer, "PNG"));
+
+        FakeNetwork network;
+        OpenRouterClient client(&network, nullptr);
+        QSignalSpy answered(&client, &OpenRouterClient::answered);
+        client.solve(image, QStringLiteral("key"), QStringLiteral("model"));
+        QTRY_COMPARE(answered.count(), 1);
+
+        const auto messages = QJsonDocument::fromJson(network.lastBody).object()
+            .value(QStringLiteral("messages")).toArray();
+        const auto instruction = messages.at(0).toObject()
+            .value(QStringLiteral("content")).toString();
+        QVERIFY(instruction.contains(QStringLiteral("overlapping regions")));
+        const auto content = messages.at(1).toObject()
+            .value(QStringLiteral("content")).toArray();
+        QCOMPARE(content.size(), 5);
+        for (qsizetype i = 1; i < content.size(); ++i) {
+            const auto url = content.at(i).toObject()
+                .value(QStringLiteral("image_url")).toObject()
+                .value(QStringLiteral("url")).toString();
+            QVERIFY(url.startsWith(QStringLiteral("data:image/png;base64,")));
+            QImage tile;
+            QVERIFY(tile.loadFromData(QByteArray::fromBase64(
+                url.mid(QStringLiteral("data:image/png;base64,").size()).toLatin1()), "PNG"));
+            QCOMPARE(tile.size(), QSize(1056, 594));
+        }
+        QCOMPARE(QJsonDocument::fromJson(network.lastBody).object()
+                     .value(QStringLiteral("max_tokens")).toInt(), 2048);
     }
 
     void rejectedResponses_data()
@@ -257,6 +313,43 @@ private slots:
             << QStringLiteral("однозначный");
         QTest::newRow("too-large") << 200 << QByteArray(1024 * 1024 + 1, 'x')
             << QStringLiteral("слишком большой");
+        const auto rejectedBlock = [](const char *name, const QJsonValue &block,
+                                      const QString &error = QStringLiteral("неподдерживаемый формат")) {
+            QTest::newRow(name) << 200 << completion(QJsonArray{
+                QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                            {QStringLiteral("text"), QStringLiteral("2")}}, block
+            }) << error;
+        };
+        const auto refusalError = QStringLiteral("отказалась");
+        rejectedBlock("typed-refusal-text", QJsonObject{
+            {QStringLiteral("type"), QStringLiteral("refusal")},
+            {QStringLiteral("text"), QStringLiteral("sk-test-never-echo private-screen-bytes")}}, refusalError);
+        rejectedBlock("typed-refusal-number", QJsonObject{
+            {QStringLiteral("type"), QStringLiteral("refusal")}, {QStringLiteral("text"), 2}}, refusalError);
+        rejectedBlock("typed-refusal-null", QJsonObject{
+            {QStringLiteral("type"), QStringLiteral("refusal")}, {QStringLiteral("text"), QJsonValue()}}, refusalError);
+        rejectedBlock("typed-refusal-missing-text", QJsonObject{
+            {QStringLiteral("type"), QStringLiteral("refusal")}}, refusalError);
+        rejectedBlock("typed-unknown-text", QJsonObject{
+            {QStringLiteral("type"), QStringLiteral("unknown")},
+            {QStringLiteral("text"), QStringLiteral("sk-test-never-echo private-screen-bytes")}});
+        rejectedBlock("typed-unknown-missing-text", QJsonObject{
+            {QStringLiteral("type"), QStringLiteral("unknown")}});
+        rejectedBlock("typed-numeric-text", QJsonObject{
+            {QStringLiteral("type"), QStringLiteral("text")}, {QStringLiteral("text"), 2}});
+        rejectedBlock("untyped-numeric-text", QJsonObject{{QStringLiteral("text"), 2}});
+        rejectedBlock("typed-non-string-type", QJsonObject{
+            {QStringLiteral("type"), 2}, {QStringLiteral("text"), QStringLiteral("3")}});
+        rejectedBlock("typed-non-object", QStringLiteral("3"));
+        const auto rejectedRefusal = [](const char *name, const QJsonValue &refusal) {
+            QTest::newRow(name) << 200
+                << completion(QStringLiteral("2"), QStringLiteral("stop"), refusal)
+                << QStringLiteral("отказалась");
+        };
+        rejectedRefusal("message-refusal-text", QStringLiteral("sk-test-never-echo private-screen-bytes"));
+        rejectedRefusal("message-refusal-number", 2);
+        rejectedRefusal("message-refusal-boolean", false);
+        rejectedRefusal("message-refusal-object", QJsonObject{});
     }
 
     void rejectedResponses()
@@ -291,7 +384,63 @@ private slots:
         QSignalSpy answered(&client, &OpenRouterClient::answered);
         client.solve("image", QStringLiteral("key"), QStringLiteral("model"));
         QTRY_COMPARE(answered.count(), 1);
-        QCOMPARE(qvariant_cast<QList<int>>(answered.first().first()), QList<int>{4});
+        QCOMPARE(qvariant_cast<QList<QList<int>>>(answered.first().first()), (QList<QList<int>>{{4}}));
+    }
+
+    void typedTextContentIgnoresReasoningBlocks()
+    {
+        FakeNetwork network;
+        network.responseBody = completion(QJsonArray{
+            QJsonObject{{QStringLiteral("type"), QStringLiteral("reasoning")},
+                        {QStringLiteral("text"), QStringLiteral("I should choose 2. But final answer is 4.")}},
+            QJsonObject{{QStringLiteral("type"), QStringLiteral("output_text")},
+                        {QStringLiteral("text"), QStringLiteral("4")}},
+            QJsonObject{{QStringLiteral("type"), QStringLiteral("tool_call")},
+                        {QStringLiteral("name"), QStringLiteral("ignore")}},
+            QJsonObject{{QStringLiteral("type"), QStringLiteral("tool")},
+                        {QStringLiteral("text"), QStringLiteral("2")}},
+            QJsonObject{{QStringLiteral("type"), QStringLiteral("reasoning")},
+                        {QStringLiteral("text"), 2}}
+        });
+        OpenRouterClient client(&network, nullptr);
+        QSignalSpy answered(&client, &OpenRouterClient::answered);
+        QSignalSpy failed(&client, &OpenRouterClient::failed);
+        client.solve("image", QStringLiteral("key"), QStringLiteral("model"));
+        QTRY_COMPARE(answered.count(), 1);
+        QCOMPARE(qvariant_cast<QList<QList<int>>>(answered.first().first()), (QList<QList<int>>{{4}}));
+        QCOMPARE(failed.count(), 0);
+    }
+
+    void compatibleTextContent_data()
+    {
+        QTest::addColumn<QJsonValue>("content");
+        QTest::addColumn<QJsonValue>("refusal");
+        QTest::newRow("null-refusal") << QJsonValue(QStringLiteral("4")) << QJsonValue();
+        QTest::newRow("empty-refusal") << QJsonValue(QStringLiteral("4")) << QJsonValue(QString{});
+        QTest::newRow("legacy-untyped-text") << QJsonValue(QJsonArray{
+            QJsonObject{{QStringLiteral("text"), QStringLiteral("4")}}
+        }) << QJsonValue();
+        QTest::newRow("split-text-blocks") << QJsonValue(QJsonArray{
+            QJsonObject{{QStringLiteral("type"), QStringLiteral("input_text")},
+                        {QStringLiteral("text"), QStringLiteral("[")}},
+            QJsonObject{{QStringLiteral("type"), QStringLiteral("output_text")},
+                        {QStringLiteral("text"), QStringLiteral("4]")}}
+        }) << QJsonValue();
+    }
+
+    void compatibleTextContent()
+    {
+        QFETCH(QJsonValue, content);
+        QFETCH(QJsonValue, refusal);
+        FakeNetwork network;
+        network.responseBody = completion(content, QStringLiteral("stop"), refusal);
+        OpenRouterClient client(&network, nullptr);
+        QSignalSpy answered(&client, &OpenRouterClient::answered);
+        QSignalSpy failed(&client, &OpenRouterClient::failed);
+        client.solve("image", QStringLiteral("key"), QStringLiteral("model"));
+        QTRY_COMPARE(answered.count(), 1);
+        QCOMPARE(qvariant_cast<QList<QList<int>>>(answered.first().first()), (QList<QList<int>>{{4}}));
+        QCOMPARE(failed.count(), 0);
     }
 
     void multipleAnswersThroughClient_data()
@@ -300,6 +449,9 @@ private slots:
         QTest::newRow("csv") << QStringLiteral("4, 1, 3, 1");
         QTest::newRow("array") << QStringLiteral("[4,1,3,1]");
         QTest::newRow("json") << QStringLiteral("{\"answers\":[4,1,3,1]}");
+        QTest::newRow("multiple-questions") << QStringLiteral("{\"answers\":[[4,1],[3,1]]}");
+        QTest::newRow("question-with-unknown-answer")
+            << QStringLiteral("{\"answers\":[[2],[],[3,1]]}");
         QTest::newRow("fenced-json") << QStringLiteral("```json\n{\"answers\":[4,1,3,1]}\n```");
     }
 
@@ -313,7 +465,13 @@ private slots:
         QSignalSpy failed(&client, &OpenRouterClient::failed);
         client.solve("image", QStringLiteral("key"), QStringLiteral("model"));
         QTRY_COMPARE(answered.count(), 1);
-        QCOMPARE(qvariant_cast<QList<int>>(answered.first().first()), (QList<int>{1, 3, 4}));
+        const auto answers = qvariant_cast<QList<QList<int>>>(answered.first().first());
+        if (response == QStringLiteral("{\"answers\":[[4,1],[3,1]]}"))
+            QCOMPARE(answers, (QList<QList<int>>{{1, 4}, {1, 3}}));
+        else if (response == QStringLiteral("{\"answers\":[[2],[],[3,1]]}"))
+            QCOMPARE(answers, (QList<QList<int>>{{2}, {}, {1, 3}}));
+        else
+            QCOMPARE(answers, (QList<QList<int>>{{1, 3, 4}}));
         QCOMPARE(failed.count(), 0);
         QVERIFY(!client.isBusy());
     }
@@ -367,7 +525,8 @@ private slots:
         network.responseBody = completion(QStringLiteral("1, 3, 4"));
         client.solve("image", QStringLiteral("key"), QStringLiteral("model"));
         QTRY_COMPARE(answered.count(), 1);
-        QCOMPARE(qvariant_cast<QList<int>>(answered.first().first()), (QList<int>{1, 3, 4}));
+        QCOMPARE(qvariant_cast<QList<QList<int>>>(answered.first().first()),
+                 (QList<QList<int>>{{1, 3, 4}}));
         QCOMPARE(network.requests, 2);
         QCOMPARE(failed.count(), 0);
     }

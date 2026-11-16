@@ -9,7 +9,6 @@
 #include <QDBusServiceWatcher>
 #include <QDir>
 #include <QFile>
-#include <QFileInfo>
 #include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -25,7 +24,7 @@ constexpr auto callbackInterface = "org.minianswer.CaptureProtection";
 
 QString jsString(const QString &text)
 {
-    // JSON quoting handles paths, tokens and executable names without allowing
+    // JSON quoting handles service names and tokens without allowing
     // any of them to change the generated JavaScript program.
     const auto array = QJsonDocument(QJsonArray{text}).toJson(QJsonDocument::Compact);
     return QString::fromUtf8(array.mid(1, array.size() - 2));
@@ -113,9 +112,8 @@ void CaptureProtection::start()
 (function () {
     "use strict";
     const targetPid = %1;
-    const targetClass = %2;
-    const service = %3;
-    const token = %4;
+    const service = %2;
+    const token = %3;
     let failed = false;
     function report(ok) {
         if (!ok) failed = true;
@@ -123,7 +121,9 @@ void CaptureProtection::start()
                  "report", token, ok && !failed);
     }
     function ours(window) {
-        return Number(window.pid) === targetPid && String(window.resourceClass) === targetClass;
+        // Wayland's compositor supplies the client PID. Application IDs can
+        // differ from the executable name (aliases, renamed binaries, probes).
+        return Number(window.pid) === targetPid;
     }
     function protect(window) {
         if (!ours(window)) return;
@@ -154,7 +154,6 @@ void CaptureProtection::start()
     } catch (error) { report(false); }
 })();
 )JS").arg(QString::number(QCoreApplication::applicationPid()),
-          jsString(QFileInfo(QCoreApplication::applicationFilePath()).fileName()),
           jsString(bus.baseService()), jsString(m_token));
 
     QFile file(m_scriptDirectory->filePath(QStringLiteral("protect.js")));

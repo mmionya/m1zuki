@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-cmake -S "$project_dir" -B "$project_dir/build" -DCMAKE_BUILD_TYPE=Release
-cmake --build "$project_dir/build" --parallel 2
-ctest --test-dir "$project_dir/build" --output-on-failure
-cmake --install "$project_dir/build" --prefix "$HOME/.local"
+if [[ "$(uname -s)" != Linux ]]; then
+  printf '%s\n' 'install.sh is for Linux. Use the native build instructions for your platform.' >&2
+  exit 1
+fi
+build_dir="${M1ZUKI_BUILD_DIR:-$project_dir/build-linux}"
+cmake -S "$project_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+cmake --build "$build_dir" --parallel "${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
+ctest --test-dir "$build_dir" --output-on-failure
+cmake --install "$build_dir" --prefix "$HOME/.local"
 python3 - <<'PY'
 import os
 from pathlib import Path

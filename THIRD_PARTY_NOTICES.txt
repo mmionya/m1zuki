@@ -1,0 +1,20 @@
+This package dynamically links the unmodified Qt 6.8.3 libraries (Qt Base and Qt SVG).
+Qt copyright: The Qt Company Ltd. and other contributors.
+Qt libraries used here are available under GNU LGPL version 3; the LGPL and GPL
+texts are supplied in licenses/. You may replace the shared Qt libraries with
+compatible modified versions. The application build scripts and sources are
+provided alongside this package in the Windows source archive/workspace.
+
+Corresponding upstream Qt source archives:
+https://download.qt.io/archive/qt/6.8/6.8.3/submodules/qtbase-everywhere-src-6.8.3.tar.xz
+https://download.qt.io/archive/qt/6.8/6.8.3/submodules/qtsvg-everywhere-src-6.8.3.tar.xz
+
+MinGW GCC runtime libraries are distributed under the GNU GPL with the GCC
+Runtime Library Exception. Source and license information:
+https://gcc.gnu.org/releases.html
+https://www.gnu.org/licenses/gcc-exception-3.1.html
+
+D3Dcompiler_47.dll is a Microsoft runtime component deployed by Qt's Windows
+deployment tool. Artwork attribution: mini-answer-character-credits.txt.
+
+This notice does not assign a new license to the m1zuki application itself.
