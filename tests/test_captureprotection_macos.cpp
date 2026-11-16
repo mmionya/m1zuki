@@ -1,5 +1,6 @@
 #include "captureprotection_macos.h"
 #include <QSignalSpy>
+#include <QWidget>
 #include <QtTest>
 
 class MacCaptureCapabilityTest : public QObject {
@@ -40,6 +41,22 @@ private slots:
         QCOMPARE(status.count(), 1);
         protection.start();
         QCOMPARE(status.count(), 1);
+    }
+    void revokingConsentHidesTheAnswer()
+    {
+        QWidget overlay;
+        overlay.setObjectName("answerOverlay");
+        overlay.show();
+        CaptureProtection protection;
+        protection.start();
+        QVERIFY(!overlay.isVisible());
+        protection.setAllowUnprotectedOverlay(true);
+        overlay.show();
+        QVERIFY(overlay.isVisible());
+        protection.setAllowUnprotectedOverlay(false);
+        QVERIFY(!overlay.isVisible());
+        overlay.show();
+        QVERIFY(!overlay.isVisible());
     }
 };
 QTEST_MAIN(MacCaptureCapabilityTest)

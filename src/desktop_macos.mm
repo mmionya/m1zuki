@@ -69,30 +69,30 @@ Hotkey translate(const QKeySequence &sequence)
         return result;
     }
     if (key <= 0 || key >= 0x10000) return result;
-    TISInputSourceRef source = TISCopyCurrentKeyboardLayoutInputSource();
-    CFDataRef data = source ? static_cast<CFDataRef>(TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)) : nullptr;
-    if (!data) {
-        if (source) CFRelease(source);
-        source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource();
-        data = source ? static_cast<CFDataRef>(TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)) : nullptr;
-    }
-    if (data) {
-        const auto *layout = reinterpret_cast<const UCKeyboardLayout *>(CFDataGetBytePtr(data));
-        for (UInt32 level = 0; level < 2 && !result.valid; ++level) {
-            for (UInt16 code = 0; code < 128; ++code) {
-                UInt32 dead = 0;
-                UniChar characters[4]; UniCharCount length = 0;
-                if (UCKeyTranslate(layout, code, kUCKeyActionDown, level ? (shiftKey >> 8) : 0,
-                    LMGetKbdType(), kUCKeyTranslateNoDeadKeysBit, &dead, 4, &length, characters) == noErr
-                    && length == 1 && QChar(characters[0]).toUpper().unicode() == key) {
-                    named(code);
-                    if (level) result.modifiers |= shiftKey;
-                    break;
+    // The fixed Latin restore shortcut must also work while a Cyrillic or
+    // another non-Latin input source is active.
+    for (int fallback = 0; fallback < 2 && !result.valid; ++fallback) {
+        TISInputSourceRef source = fallback ? TISCopyCurrentASCIICapableKeyboardLayoutInputSource()
+                                          : TISCopyCurrentKeyboardLayoutInputSource();
+        CFDataRef data = source ? static_cast<CFDataRef>(TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)) : nullptr;
+        if (data) {
+            const auto *layout = reinterpret_cast<const UCKeyboardLayout *>(CFDataGetBytePtr(data));
+            for (UInt32 level = 0; level < 2 && !result.valid; ++level) {
+                for (UInt16 code = 0; code < 128; ++code) {
+                    UInt32 dead = 0;
+                    UniChar characters[4]; UniCharCount length = 0;
+                    if (UCKeyTranslate(layout, code, kUCKeyActionDown, level ? (shiftKey >> 8) : 0,
+                        LMGetKbdType(), kUCKeyTranslateNoDeadKeysMask, &dead, 4, &length, characters) == noErr
+                        && length == 1 && QChar(characters[0]).toUpper().unicode() == key) {
+                        named(code);
+                        if (level) result.modifiers |= shiftKey;
+                        break;
+                    }
                 }
             }
         }
+        if (source) CFRelease(source);
     }
-    if (source) CFRelease(source);
     return result;
 }
 bool same(const Hotkey &a, const Hotkey &b) { return a.valid && b.valid && a.key == b.key && a.modifiers == b.modifiers; }

@@ -34,7 +34,10 @@ void CaptureProtection::start()
     if (m_started) return;
     m_started = true;
     qApp->installEventFilter(this);
-    for (auto *widget : QApplication::topLevelWidgets()) configureOverlay(widget);
+    for (auto *widget : QApplication::topLevelWidgets()) {
+        configureOverlay(widget);
+        if (!m_allowUnprotected && widget->objectName() == QLatin1String("answerOverlay")) widget->hide();
+    }
     reportStatus();
 }
 
