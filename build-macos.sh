@@ -18,17 +18,18 @@ cp -R "$BUILD/m1zuki.app" "$STAGE/"
 "$QT_ROOT/bin/macdeployqt" "$STAGE/m1zuki.app" -always-overwrite
 RESOURCES="$STAGE/m1zuki.app/Contents/Resources"
 mkdir -p "$RESOURCES"
-cp "$ROOT/MACOS.md" "$ROOT/THIRD_PARTY_NOTICES.txt" "$RESOURCES/"
+cp "$ROOT/MACOS.md" "$ROOT/BUILD-STATUS.md" "$ROOT/THIRD_PARTY_NOTICES.txt" "$RESOURCES/"
 cp -R "$ROOT/licenses" "$RESOURCES/"
 cp "$ROOT/assets/mini-answer-character-credits.txt" "$RESOURCES/"
 # Local ad-hoc signature preserves bundle integrity; it is NOT Developer ID notarization.
 codesign --force --deep --sign - "$STAGE/m1zuki.app"
 codesign --verify --deep --strict "$STAGE/m1zuki.app"
 for ARCH in ${ARCHS//;/ }; do
-  lipo -verify_arch "$ARCH" "$STAGE/m1zuki.app/Contents/MacOS/m1zuki"
+  lipo "$STAGE/m1zuki.app/Contents/MacOS/m1zuki" -verify_arch "$ARCH"
 done
 # Exercise the deployed app without permissions, a screen capture or an API call.
-QT_QPA_PLATFORM=cocoa "$STAGE/m1zuki.app/Contents/MacOS/m1zuki" --render-preview "$BUILD/settings-preview.png"
+env -u QT_PLUGIN_PATH -u QML2_IMPORT_PATH -u DYLD_LIBRARY_PATH -u DYLD_FRAMEWORK_PATH \
+  QT_QPA_PLATFORM=cocoa "$STAGE/m1zuki.app/Contents/MacOS/m1zuki" --render-preview "$BUILD/settings-preview.png"
 mkdir -p "$ROOT/dist"
 LABEL="${ARCHS//;/+}"
 ditto -c -k --sequesterRsrc --keepParent "$STAGE/m1zuki.app" "$ROOT/dist/m1zuki-macos-$LABEL.zip"
