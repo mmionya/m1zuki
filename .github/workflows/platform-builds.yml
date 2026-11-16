@@ -37,7 +37,6 @@ jobs:
           host: mac
           target: desktop
           arch: clang_64
-          modules: qtsvg
           cache: true
       - name: Build and test universal app
         env:
