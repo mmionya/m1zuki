@@ -6,7 +6,7 @@ Sources: version 1.4.0, based on the supplied m1zuki.zip plus the Windows and pl
 
 Native Linux/macOS build commit: `2775565ea979029af0af3cd7a02e55f5bea7b611`.
 Successful run: https://github.com/mmionya/m1zuki/actions/runs/43854845439
-Branch: `codex/platform-builds-20261116`. Main remains unchanged.
+Build branch: `codex/platform-builds-20261116`. The v1.4.0 release promotes these sources to main and preserves the verified Linux/macOS binaries; Windows is rebuilt and tested during publication.
 
 | Platform | Result |
 | --- | --- |
