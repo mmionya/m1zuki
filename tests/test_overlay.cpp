@@ -58,7 +58,7 @@ private slots:
     void invalidSetsHidePreviousAnswers()
     {
         Overlay overlay;
-        for (const QList<int> invalid : {QList<int>{}, QList<int>{1, 0}, QList<int>{1, -3}, QList<int>{2, 100}}) {
+        for (const QList<int> &invalid : {QList<int>{}, QList<int>{1, 0}, QList<int>{1, -3}, QList<int>{2, 100}}) {
             overlay.showNumbers({1, 3}, 0, 32);
             overlay.showNumbers(invalid, 0, 32);
             QVERIFY(!overlay.isVisible());

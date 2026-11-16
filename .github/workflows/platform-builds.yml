@@ -49,3 +49,12 @@ jobs:
             dist/m1zuki-macos-*.zip
             dist/MACOS.md
           if-no-files-found: error
+      - name: Verification output
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: m1zuki-macos-verification
+          path: |
+            build-macos/settings-preview.png
+            build-macos/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore

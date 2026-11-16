@@ -196,7 +196,7 @@ private slots:
         QTest::newRow("capture-invalid") << QByteArrayLiteral(R"({"captureShortcut":"not-a-key"})");
         QTest::newRow("capture-sequence") << QByteArrayLiteral(R"({"captureShortcut":"Ctrl+A, Ctrl+B"})");
         QTest::newRow("clear-empty") << QByteArrayLiteral(R"({"clearShortcut":""})");
-        QTest::newRow("identical-shortcuts") << QByteArrayLiteral(R"({"clearShortcut":"Ctrl+Alt+Space"})");
+        QTest::newRow("identical-shortcuts") << QByteArrayLiteral(R"({"captureShortcut":"Ctrl+Alt+Space","clearShortcut":"Ctrl+Alt+Space"})");
         QTest::newRow("mouse-negative") << QByteArrayLiteral(R"({"captureMouseButton":-1})");
         QTest::newRow("mouse-primary") << QByteArrayLiteral(R"({"captureMouseButton":1})");
         QTest::newRow("mouse-secondary") << QByteArrayLiteral(R"({"clearMouseButton":3})");

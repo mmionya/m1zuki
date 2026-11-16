@@ -1,20 +1,33 @@
-This package dynamically links the unmodified Qt 6.8.3 libraries (Qt Base and Qt SVG).
+The Windows and macOS release packages dynamically link the unmodified Qt 6.8.3
+libraries (Qt Base and Qt SVG). Windows packages include shared DLLs; macOS
+packages include shared frameworks/libraries and plugins in the application bundle.
 Qt copyright: The Qt Company Ltd. and other contributors.
 Qt libraries used here are available under GNU LGPL version 3; the LGPL and GPL
 texts are supplied in licenses/. You may replace the shared Qt libraries with
 compatible modified versions. The application build scripts and sources are
-provided alongside this package in the Windows source archive/workspace.
+provided alongside the packages in the source archive/workspace. A rebuilt macOS
+bundle may need to be signed again after replacing its shared libraries.
+
+Linux packages use the Qt and KDE libraries installed on the target system and
+do not bundle them. Their versions, source packages and license notices are
+provided by the Linux distribution. Custom builds may use a different Qt version.
 
 Corresponding upstream Qt source archives:
 https://download.qt.io/archive/qt/6.8/6.8.3/submodules/qtbase-everywhere-src-6.8.3.tar.xz
 https://download.qt.io/archive/qt/6.8/6.8.3/submodules/qtsvg-everywhere-src-6.8.3.tar.xz
 
-MinGW GCC runtime libraries are distributed under the GNU GPL with the GCC
-Runtime Library Exception. Source and license information:
+Windows packages built with MinGW include GCC runtime libraries distributed
+under the GNU GPL with the GCC Runtime Library Exception. Source and license
+information:
 https://gcc.gnu.org/releases.html
 https://www.gnu.org/licenses/gcc-exception-3.1.html
 
-D3Dcompiler_47.dll is a Microsoft runtime component deployed by Qt's Windows
-deployment tool. Artwork attribution: mini-answer-character-credits.txt.
+D3Dcompiler_47.dll is a Microsoft runtime component deployed only in the Windows
+package by Qt's Windows deployment tool. The MinGW and D3D components above are
+not included in the macOS package.
+
+Artwork attribution: mini-answer-character-credits.txt (also present in
+assets/ in the source tree, Contents/Resources/ in the macOS bundle, and
+share/doc/mini-answer/ in the Linux package).
 
 This notice does not assign a new license to the m1zuki application itself.
