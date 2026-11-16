@@ -32,7 +32,18 @@ jobs:
           cache: true
       - name: Build and test Windows package
         shell: pwsh
-        run: ./build-windows.ps1 -QtRoot $env:QT_ROOT_DIR -MingwRoot "$env:IQTA_TOOLS/mingw1310_64" -OutputName m1zuki-windows-1.4.0
+        run: |
+          try {
+            ./build-windows.ps1 -QtRoot $env:QT_ROOT_DIR -MingwRoot "$env:IQTA_TOOLS/mingw1310_64" -OutputName m1zuki-windows-1.4.0
+          } catch {
+            $buildFailure = $_
+            if (Test-Path build-windows/test_windows_integration.exe) {
+              $env:PATH = "$env:QT_ROOT_DIR/bin;$env:IQTA_TOOLS/mingw1310_64/bin;$env:PATH"
+              & ./build-windows/test_windows_integration.exe -o build-windows/windows-integration.txt,txt
+              Get-Content build-windows/windows-integration.txt
+            }
+            throw $buildFailure
+          }
       - uses: actions/upload-artifact@v6
         with:
           name: m1zuki-windows-release
@@ -43,7 +54,9 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: m1zuki-windows-verification
-          path: build-windows/Testing/Temporary/LastTest.log
+          path: |
+            build-windows/Testing/Temporary/LastTest.log
+            build-windows/windows-integration.txt
           if-no-files-found: ignore
   publish:
     needs: windows
